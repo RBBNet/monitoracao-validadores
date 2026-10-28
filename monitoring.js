@@ -46,7 +46,7 @@ async function getPendingVotes(jsonRpcUrl) {
 }
 
 async function discardValidatorVote(jsonRpcUrl, address) {
-    console.log(` Descartando proposta pendente para ${address}`);
+    console.log(` Descartando voto pendente para ${address}`);
     const response = await axios.post(jsonRpcUrl, {
         jsonrpc: "2.0",
         method: "qbft_discardValidatorVote",
