@@ -35,6 +35,27 @@ async function voteForValidator(jsonRpcUrl, address, vote) {
     return response.data.result;
 }
 
+async function getPendingVotes(jsonRpcUrl) {
+    const response = await axios.post(jsonRpcUrl, {
+        jsonrpc: "2.0",
+        method: "qbft_getPendingVotes",
+        params: [],
+        id: 1
+    });
+    return response.data.result || {};
+}
+
+async function discardValidatorVote(jsonRpcUrl, address) {
+    console.log(` Descartando voto pendente para ${address}`);
+    const response = await axios.post(jsonRpcUrl, {
+        jsonrpc: "2.0",
+        method: "qbft_discardValidatorVote",
+        params: [address],
+        id: 1
+    });
+    return response.data.result;
+}
+
 async function getBlockByNumber(jsonRpcUrl, blockNumber, verbose = false) {
     const response = await axios.post(jsonRpcUrl, {
         jsonrpc: "2.0",
@@ -75,6 +96,28 @@ async function getNewValidators(jsonRpcUrl, finalBlock, numBlocks) {
     return newValidators;
 }
 
+/*
+Uma proposta de voto (qbft_proposeValidatorVote) fica registrada no nó até ser descartada ou até o Besu
+reiniciar. Enquanto estiver registrada, o Besu a reemite no primeiro bloco proposto após cada época
+(qbft.epochlength), e também logo após qualquer mudança na situação do alvo. Assim, um voto de exclusão
+que já cumpriu o papel volta a contar quando o validador excluído é readmitido, e, se houver propostas
+antigas em maioria dos nós, o validador readmitido é excluído de novo mesmo produzindo blocos.
+Por isso, descartam-se as propostas que não correspondem mais à situação atual:
+  - exclusão de quem não está mais no consenso, voltou a produzir ou acabou de ser (re)incluído;
+  - inclusão de quem já está no consenso.
+*/
+async function discardFulfilledProposals(jsonRpcUrl, validators, offlineValidators) {
+    const pendingVotes = await getPendingVotes(jsonRpcUrl);
+    for(const [address, vote] of Object.entries(pendingVotes)) {
+        const validator = address.toLowerCase();
+        const isValidator = validators.has(validator);
+        const stillOffline = offlineValidators.includes(validator);
+        if((vote === false && !stillOffline) || (vote === true && isValidator)) {
+            await discardValidatorVote(jsonRpcUrl, address);
+        }
+    }
+}
+
 async function monitor(jsonRpcUrl, blockInterval) {
     const timestamp = new Date().toISOString();
     
@@ -86,8 +129,10 @@ async function monitor(jsonRpcUrl, blockInterval) {
         const numValidators = signerMetrics.length;
         let newValidators = await getNewValidators(jsonRpcUrl, finalBlock, numValidators);
         let offlineValidators = [];
+        let validators = new Set();
         for(let v = 0; v < numValidators; ++v) {
-            const validator = signerMetrics[v].address;
+            const validator = signerMetrics[v].address.toLowerCase();
+            validators.add(validator);
             const blocks = parseInt(signerMetrics[v].proposedBlockCount.substring(2), 16);
             // Avaliar se validador não foi incluído recentemente.
             const newValidator = newValidators.has(validator);
@@ -99,6 +144,7 @@ async function monitor(jsonRpcUrl, blockInterval) {
 
         // Ordena lista de validadores para que todos sempre votem na mesma ordem.
         offlineValidators = offlineValidators.sort();
+        await discardFulfilledProposals(jsonRpcUrl, validators, offlineValidators);
         const numOfflineValidators = offlineValidators.length;
         if(numOfflineValidators) {
             console.log(`${numOfflineValidators} validador(es) offline`);
